@@ -8,6 +8,7 @@ import { LoginModal, RegisterModal, ConfirmationModal, EditCompanyModal, InfoMod
 import AlertaVigiaConfigPage from './components/AlertaVigiaConfigPage';
 import { ArrowLeftIcon, ExclamationTriangleIcon } from './components/Icons';
 import { supabase } from './supabaseClient';
+import { sendEmail } from './services/emailService';
 
 const HEARTBEAT_INTERVAL_MS = 30 * 1000; // 30 seconds
 const HEARTBEAT_THRESHOLD_SECONDS = 45; // 45 seconds tolerance
@@ -20,18 +21,18 @@ function App() {
     const [currentUser, setCurrentUser] = useState<Company | null>(null);
     const [demoMode, setDemoMode] = useState(false);
     const [isOnline, setIsOnline] = useState(navigator.onLine);
-    
+
     // Data State
     const [companies, setCompanies] = useState<Company[]>([]);
     const [posts, setPosts] = useState<ServicePost[]>([]);
     const [events, setEvents] = useState<MonitoringEvent[]>([]);
     const [postFailures, setPostFailures] = useState<Record<number, number>>({});
     const [alertaVigiaConfigs, setAlertaVigiaConfigs] = useState<Record<number, AlertaVigiaConfig>>({});
-    
+
     const [postSearchQuery, setPostSearchQuery] = useState('');
     const [companySearchQuery, setCompanySearchQuery] = useState('');
     const [activeVigiaPost, setActiveVigiaPost] = useState<ServicePost | null>(null);
-    
+
     // Modal State
     const [showLoginModal, setShowLoginModal] = useState(false);
     const [showRegisterModal, setShowRegisterModal] = useState(false);
@@ -89,21 +90,21 @@ function App() {
     const processOfflineQueue = useCallback(async () => {
         const queueJson = localStorage.getItem('offlineEventQueue');
         if (!queueJson) return;
-    
+
         const queue: OfflineEvent[] = JSON.parse(queueJson);
         if (queue.length === 0) return;
-    
+
         console.log(`Syncing ${queue.length} offline events.`);
-    
+
         const eventsToInsert = queue.map(e => ({
             post_id: e.postId,
             type: e.type,
             timestamp: e.timestamp,
             status: EventStatus.Unresolved
         }));
-    
+
         const { error: insertError } = await supabase.from('monitoring_events').insert(eventsToInsert);
-    
+
         if (insertError) {
             console.error("Failed to sync offline events:", insertError.message);
             setInfoModal({
@@ -113,41 +114,41 @@ function App() {
             });
             return;
         }
-    
+
         // Events inserted successfully, clear the queue immediately to prevent duplicates
         localStorage.removeItem('offlineEventQueue');
-        
+
         const failureCountsByPost: { [key: number]: number } = {};
         queue.forEach(event => {
             if (event.type === EventType.VigilantFailure) {
                 failureCountsByPost[event.postId] = (failureCountsByPost[event.postId] || 0) + 1;
             }
         });
-    
+
         let failureSyncError = false;
         for (const postIdStr in failureCountsByPost) {
             const postId = parseInt(postIdStr, 10);
             const failuresToAdd = failureCountsByPost[postId];
-    
+
             const { data: currentFailure, error: fetchError } = await supabase
                 .from('post_failures')
                 .select('count')
                 .eq('post_id', postId)
                 .single();
-            
+
             if (fetchError && fetchError.code !== 'PGRST116') {
                 console.error(`Failed to fetch current failure count for post ${postId}:`, fetchError.message);
                 failureSyncError = true;
                 continue;
             }
-            
+
             const currentCount = currentFailure?.count || 0;
             const newTotalCount = currentCount + failuresToAdd;
-    
+
             const { error: upsertError } = await supabase
                 .from('post_failures')
                 .upsert({ post_id: postId, count: newTotalCount });
-    
+
             if (upsertError) {
                 console.error(`Failed to sync failure count for post ${postId}:`, upsertError.message);
                 failureSyncError = true;
@@ -155,22 +156,22 @@ function App() {
                 setPostFailures(prev => ({ ...prev, [postId]: newTotalCount }));
             }
         }
-        
+
         if (failureSyncError) {
-             setInfoModal({
+            setInfoModal({
                 isOpen: true,
                 title: 'Sincronização Parcial',
                 message: 'Os eventos foram enviados, mas houve um erro ao atualizar a contagem de falhas. Por favor, verifique os totais de falhas.',
             });
         } else {
-             setInfoModal({
+            setInfoModal({
                 isOpen: true,
                 title: 'Sincronização Completa',
                 message: `${queue.length} evento(s) registrado(s) durante o período offline foram enviados com sucesso.`,
                 autoCloseDelay: 3000
             });
         }
-    
+
     }, []);
 
     useEffect(() => {
@@ -197,22 +198,22 @@ function App() {
             processOfflineQueue();
         }
     }, [isOnline, processOfflineQueue]);
-    
+
     // Effect for PWA Service Worker registration
     useEffect(() => {
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').then(registration => {
-            console.log('ServiceWorker registration successful with scope: ', registration.scope);
-          }, err => {
-            console.log('ServiceWorker registration failed: ', err);
-          });
-        });
-      }
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js').then(registration => {
+                    console.log('ServiceWorker registration successful with scope: ', registration.scope);
+                }, err => {
+                    console.log('ServiceWorker registration failed: ', err);
+                });
+            });
+        }
     }, []);
 
     // --- DATA FETCHING & REALTIME SUBSCRIPTION ---
-    
+
     // Effect for initial data fetching
     useEffect(() => {
         const fetchInitialData = async () => {
@@ -224,13 +225,13 @@ function App() {
             if (companiesError) {
                 console.error('Error fetching data from Supabase:', companiesError.message);
                 const errorMessage = companiesError.message.toLowerCase();
-                
+
                 if (errorMessage.includes('does not exist') || errorMessage.includes('could not find the table')) {
                     setFetchError("As tabelas do banco de dados não foram encontradas. Por favor, acesse o 'SQL Editor' no seu projeto Supabase e execute o script SQL fornecido para criar a estrutura necessária.");
-                } 
+                }
                 else if (errorMessage.includes('security policies') || errorMessage.includes('rls')) {
                     setFetchError("Falha ao carregar dados devido às Políticas de Segurança (RLS). Verifique no Supabase se a role 'anon' tem permissão de leitura (SELECT) para a tabela 'companies'.");
-                } 
+                }
                 else {
                     setFetchError(`Ocorreu um erro inesperado: ${companiesError.message}`);
                 }
@@ -249,11 +250,11 @@ function App() {
                 supabase.from('post_failures').select('*'),
                 supabase.from('alerta_vigia_configs').select('*')
             ]);
-            
+
             const fetchErrors = { posts: postsRes.error, events: eventsRes.error, failures: failuresRes.error, configs: configsRes.error, };
             const hasError = Object.values(fetchErrors).some(e => e !== null);
 
-            if(hasError) {
+            if (hasError) {
                 Object.entries(fetchErrors).forEach(([key, error]) => {
                     if (error) console.error(`Error fetching ${key}:`, error.message);
                 });
@@ -262,8 +263,8 @@ function App() {
                 return;
             }
 
-            setCompanies(companiesData.map(c => ({...c, postCount: c.post_count})));
-            
+            setCompanies(companiesData.map(c => ({ ...c, postCount: c.post_count })));
+
             if (postsRes.data) {
                 const initialPosts = postsRes.data.map((p: any) => ({
                     id: p.id, companyId: p.company_id, name: p.name, location: p.location,
@@ -281,7 +282,7 @@ function App() {
                 }));
                 setEvents(mappedEvents);
             }
-            
+
             if (failuresRes.data) {
                 const failuresMap = failuresRes.data.reduce((acc, failure) => {
                     acc[failure.post_id] = failure.count;
@@ -334,7 +335,7 @@ function App() {
                             .select('name')
                             .eq('id', newRecord.post_id)
                             .single();
-                        
+
                         const newEvent: MonitoringEvent = {
                             id: newRecord.id,
                             postId: newRecord.post_id,
@@ -385,7 +386,7 @@ function App() {
             supabase.removeChannel(channel);
         };
     }, []);
-    
+
     // Effect for handling page close/hide to log 'Portaria Offline' event
     useEffect(() => {
         const handlePageHide = () => {
@@ -393,10 +394,10 @@ function App() {
                 // This is a "best effort" attempt. Modern browsers may allow this fetch-based call to complete.
                 supabase
                     .from('monitoring_events')
-                    .insert([{ 
-                        post_id: activeVigiaPost.id, 
-                        type: EventType.GatehouseOffline, 
-                        status: EventStatus.Unresolved 
+                    .insert([{
+                        post_id: activeVigiaPost.id,
+                        type: EventType.GatehouseOffline,
+                        status: EventStatus.Unresolved
                     }])
                     .then(({ error }) => {
                         if (error) {
@@ -527,9 +528,9 @@ function App() {
                 );
 
                 if (isStillOnline) {
-                     console.log(`Post ${post.id} (${post.name}) missed deactivation. Creating 'Local Sem Internet' event.`);
-                     createEvent(post.id, EventType.LocalSemInternet);
-                     return; // Event created, skip other checks for this post on this tick
+                    console.log(`Post ${post.id} (${post.name}) missed deactivation. Creating 'Local Sem Internet' event.`);
+                    createEvent(post.id, EventType.LocalSemInternet);
+                    return; // Event created, skip other checks for this post on this tick
                 }
             }
         });
@@ -543,16 +544,31 @@ function App() {
     // Handlers
     const handleOpenTestEmailModal = () => setShowTestEmailModal(true);
 
-    const handleSendTestEmail = (email: string) => {
+    const handleSendTestEmail = async (email: string) => {
         console.log(`Sending test email to: ${email}`);
-        // For now, just close the modal as per instructions.
-        setShowTestEmailModal(false);
-        setInfoModal({
-            isOpen: true,
-            title: "Envio de Teste",
-            message: `O envio de email para ${email} foi solicitado. (Lógica a ser implementada).`,
-            autoCloseDelay: 3000
-        });
+
+        try {
+            await sendEmail(
+                email,
+                'Teste de Notificação - DeltaNuvem',
+                '<h1>Teste de Email</h1><p>Este é um email de teste enviado pelo sistema DeltaNuvem.</p>'
+            );
+
+            setShowTestEmailModal(false);
+            setInfoModal({
+                isOpen: true,
+                title: "Sucesso",
+                message: `Email de teste enviado com sucesso para ${email}.`,
+                autoCloseDelay: 3000
+            });
+        } catch (error: any) {
+            console.error("Falha ao enviar email de teste:", error);
+            setInfoModal({
+                isOpen: true,
+                title: "Erro no Envio",
+                message: `Falha ao enviar email: ${error.message || 'Erro desconhecido'}. Verifique se a API Key do SendGrid está configurada no Render.`,
+            });
+        }
     };
 
     const handleLogin = async (username: string, password: string): Promise<string | true> => {
@@ -573,11 +589,11 @@ function App() {
         if (!user || user.password !== password) {
             return 'Nome de usuário ou senha inválidos.';
         }
-        
+
         if (user.blocked) {
             return 'Sua conta está pendente de aprovação. Por favor, aguarde.';
         }
-        
+
         const currentUserData: Company = { ...user, postCount: user.post_count };
         setCurrentUser(currentUserData);
         setIsLoggedIn(true);
@@ -589,7 +605,7 @@ function App() {
         setCurrentUser(null);
         setIsLoggedIn(false);
     };
-    
+
     const handleRegisterCompany = async (newCompanyData: Omit<Company, 'id' | 'postCount' | 'blocked'>): Promise<string | true> => {
         // 1. Check if the email already exists
         const { data: emailExists, error: emailError } = await supabase
@@ -597,39 +613,39 @@ function App() {
             .select('email')
             .eq('email', newCompanyData.email)
             .maybeSingle();
-    
+
         if (emailError) {
             console.error('Error checking for existing email:', emailError.message);
             return 'Ocorreu um erro ao verificar o email. Tente novamente.';
         }
-    
+
         if (emailExists) {
             return 'Este email já está cadastrado.';
         }
-    
+
         // 2. Check if the username already exists
         const { data: usernameExists, error: usernameError } = await supabase
             .from('companies')
             .select('username')
             .eq('username', newCompanyData.username)
             .maybeSingle();
-    
+
         if (usernameError) {
             console.error('Error checking for existing username:', usernameError.message);
             return 'Ocorreu um erro ao verificar o nome de usuário. Por favor, escolha outro.';
         }
-    
+
         if (usernameExists) {
             return 'Este nome de usuário já está em uso. Por favor, escolha outro.';
         }
-    
+
         // 3. If both are unique, proceed with insertion
         const { data, error: insertError } = await supabase
-          .from('companies')
-          .insert([{ ...newCompanyData, post_count: 0, blocked: true }])
-          .select()
-          .single();
-    
+            .from('companies')
+            .insert([{ ...newCompanyData, post_count: 0, blocked: true }])
+            .select()
+            .single();
+
         if (insertError) {
             console.error('Error registering company:', insertError.message);
             // Fallback checks for unique constraints, though the checks above should prevent these.
@@ -640,15 +656,15 @@ function App() {
                 return 'Este nome de usuário já está em uso. Por favor, escolha outro.';
             }
             return 'Não foi possível concluir o registro. Tente novamente mais tarde.';
-        } 
-        
-        const registeredCompany: Company = {...data, postCount: data.post_count };
+        }
+
+        const registeredCompany: Company = { ...data, postCount: data.post_count };
         setCompanies(prev => [...prev, registeredCompany]);
         setShowRegisterModal(false);
         setShowRegistrationSuccessModal(true);
         return true;
     };
-    
+
     const handleAddPost = () => setShowAddPostModal(true);
 
     const handleSaveNewPost = async (newPostData: { name: string; location: string; companyId: number; password: string; }) => {
@@ -680,17 +696,17 @@ function App() {
             .eq('id', company.id);
 
         if (companyUpdateError) return console.error("Error updating company post count:", companyUpdateError.message);
-        
+
         const newPostForState: ServicePost = {
-            ...newPost, companyId: newPost.company_id, 
+            ...newPost, companyId: newPost.company_id,
             companyLogo: company.logo, companyName: company.name
         };
         setPosts(prev => [newPostForState, ...prev]);
         setCompanies(prev => prev.map(c => c.id === companyId ? { ...c, postCount: c.postCount + 1 } : c));
-        setAlertaVigiaConfigs(prev => ({...prev, [newPost.id]: { activationTime: newConfig.activation_time, deactivationTime: newConfig.deactivation_time, progressDurationMinutes: newConfig.progress_duration_minutes, alertSoundSeconds: newConfig.alert_sound_seconds } }));
+        setAlertaVigiaConfigs(prev => ({ ...prev, [newPost.id]: { activationTime: newConfig.activation_time, deactivationTime: newConfig.deactivation_time, progressDurationMinutes: newConfig.progress_duration_minutes, alertSoundSeconds: newConfig.alert_sound_seconds } }));
         setShowAddPostModal(false);
     };
-    
+
     const handleSendAlertVigiaAction = async (postIdStr: string, password: string): Promise<string | true> => {
         const postId = parseInt(postIdStr.trim(), 10);
         if (isNaN(postId)) return 'ID do Posto inválido. Use apenas números.';
@@ -701,7 +717,7 @@ function App() {
             .eq('id', postId)
             .eq('password', password.trim())
             .maybeSingle();
-            
+
         if (error) {
             console.error('Error fetching post for login:', error);
             return 'Erro ao verificar as credenciais do posto.';
@@ -718,19 +734,19 @@ function App() {
                 return 'Este posto já está sendo monitorado em outro dispositivo.';
             }
         }
-        
+
         await supabase
             .from('service_posts')
             .update({ last_heartbeat: new Date().toISOString() })
             .eq('id', post.id);
 
         await createEvent(post.id, EventType.GatehouseOnline);
-        
+
         const postForState: ServicePost = {
-             id: post.id, companyId: post.company_id, name: post.name, location: post.location,
-             blocked: post.blocked, password: post.password,
-             companyLogo: post.companies.logo, companyName: post.companies.name,
-             last_heartbeat: new Date().toISOString()
+            id: post.id, companyId: post.company_id, name: post.name, location: post.location,
+            blocked: post.blocked, password: post.password,
+            companyLogo: post.companies.logo, companyName: post.companies.name,
+            last_heartbeat: new Date().toISOString()
         };
 
         setActiveVigiaPost(postForState);
@@ -741,7 +757,7 @@ function App() {
     const handleCreateSystemEvent = async (postId: number, eventType: EventType) => {
         await createEvent(postId, eventType);
     };
-    
+
     const handleVigilantPresence = async (postId: number) => {
         if (!isOnline) return;
         const { error } = await supabase
@@ -756,27 +772,27 @@ function App() {
     const handleIncrementFailure = async (postId: number) => {
         const currentFailures = postFailures[postId] || 0;
         const newCount = currentFailures + 1;
-    
+
         // Optimistically update UI
         setPostFailures(prev => ({ ...prev, [postId]: newCount }));
-    
+
         // This will queue the event if offline
         const eventCreated = await createEvent(postId, EventType.VigilantFailure);
-    
+
         // If online, we update the count immediately.
         // If offline, the count will be updated by processOfflineQueue when connection is restored.
         if (isOnline && eventCreated) {
-             const { error: upsertError } = await supabase.from('post_failures').upsert({ post_id: postId, count: newCount });
-             if (upsertError) {
-                 console.error("Error upserting failure count:", upsertError.message);
-                 // Revert optimistic update if DB call fails
-                 setPostFailures(prev => ({ ...prev, [postId]: currentFailures }));
-                 setInfoModal({
+            const { error: upsertError } = await supabase.from('post_failures').upsert({ post_id: postId, count: newCount });
+            if (upsertError) {
+                console.error("Error upserting failure count:", upsertError.message);
+                // Revert optimistic update if DB call fails
+                setPostFailures(prev => ({ ...prev, [postId]: currentFailures }));
+                setInfoModal({
                     isOpen: true,
                     title: 'Erro ao Salvar Falha',
                     message: `O evento foi registrado, mas não foi possível atualizar o contador de falhas. Detalhes: ${upsertError.message}`
-                 });
-             }
+                });
+            }
         } else if (!eventCreated) {
             // Revert optimistic update if event creation itself failed
             setPostFailures(prev => ({ ...prev, [postId]: currentFailures }));
@@ -831,7 +847,7 @@ function App() {
 
     const handleSaveComment = async (eventId: number, comment: string) => {
         const { error } = await supabase.from('monitoring_events').update({ comment }).eq('id', eventId);
-        if(error) console.error("Error saving comment:", error.message);
+        if (error) console.error("Error saving comment:", error.message);
         else {
             setEvents(prevEvents => prevEvents.map(e => (e.id === eventId ? { ...e, comment } : e)));
             setShowCommentModal(false);
@@ -866,7 +882,7 @@ function App() {
             .single();
 
         if (error) return console.error("Error updating company:", error.message);
-        
+
         setCompanies(companies.map(c => c.id === updatedCompany.id ? { ...c, ...updatedCompany } : c));
         setPosts(prevPosts => prevPosts.map(post =>
             post.companyId === updatedCompany.id ? { ...post, companyName: updatedCompany.name, companyLogo: updatedCompany.logo } : post
@@ -878,7 +894,7 @@ function App() {
         setSelectedPost(post);
         setShowEditPostModal(true);
     };
-    
+
     const handleOpenAlertaVigiaConfig = (post: ServicePost) => {
         setSelectedPostForConfig(post);
         setShowAlertaVigiaConfig(true);
@@ -901,14 +917,14 @@ function App() {
         type: 'post', action: 'delete', data: post, title: 'Excluir Posto de Serviço',
         message: `Você tem certeza que deseja excluir o posto "${post.name}"? Todos os eventos relacionados serão perdidos.`
     });
-    
+
     const handleUpdatePost = async (updatedPost: ServicePost) => {
         const { id, companyId, companyLogo, companyName, ...updateData } = updatedPost;
         const { error } = await supabase
             .from('service_posts')
             .update(updateData)
             .eq('id', id);
-    
+
         if (error) {
             console.error("Error updating post:", error.message);
         } else {
@@ -920,7 +936,7 @@ function App() {
     const handleConfirmAction = async () => {
         if (!confirmation) return;
         const { type, action, data } = confirmation;
-        
+
         if (type === 'panic_button') {
             const post = data as ServicePost;
             await createEvent(post.id, EventType.PanicButton);
@@ -985,7 +1001,7 @@ function App() {
     const postsForCurrentUser = currentUser
         ? currentUser.username === 'admin' ? posts : posts.filter(post => post.companyId === currentUser.id)
         : [];
-    
+
     const filteredPosts = postsForCurrentUser.filter(post =>
         post.name.toLowerCase().includes(postSearchQuery.toLowerCase()) ||
         post.location.toLowerCase().includes(postSearchQuery.toLowerCase()) ||
@@ -994,7 +1010,7 @@ function App() {
 
     const postIdsForCurrentUser = new Set(postsForCurrentUser.map(p => p.id));
     const eventsForCurrentUser = events.filter(event => currentUser?.username === 'admin' || postIdsForCurrentUser.has(event.postId));
-        
+
     const renderContent = () => {
         if (fetchError) {
             return (
@@ -1004,8 +1020,8 @@ function App() {
                         <h2 className="text-2xl font-bold text-red-400 mb-4">Erro de Conexão com o Banco de Dados</h2>
                         <p className="text-md text-gray-300 mb-6">{fetchError}</p>
                         <p className="text-sm text-gray-400">
-                           A causa mais comum para este erro é a falta das tabelas no Supabase ou uma política de segurança (RLS) restritiva. 
-                           Por favor, vá para <code className="bg-gray-700 p-1 rounded">SQL Editor</code> para executar o script de criação das tabelas e verifique as <code className="bg-gray-700 p-1 rounded">Policies</code> do seu banco de dados.
+                            A causa mais comum para este erro é a falta das tabelas no Supabase ou uma política de segurança (RLS) restritiva.
+                            Por favor, vá para <code className="bg-gray-700 p-1 rounded">SQL Editor</code> para executar o script de criação das tabelas e verifique as <code className="bg-gray-700 p-1 rounded">Policies</code> do seu banco de dados.
                         </p>
                     </div>
                 </div>
@@ -1025,11 +1041,11 @@ function App() {
             );
         }
         if (showAlertaVigiaConfig && selectedPostForConfig) {
-            const postConfig = alertaVigiaConfigs[selectedPostForConfig.id] || { 
-                activationTime: '22:00', 
-                deactivationTime: '06:00', 
-                progressDurationMinutes: 30, 
-                alertSoundSeconds: 60 
+            const postConfig = alertaVigiaConfigs[selectedPostForConfig.id] || {
+                activationTime: '22:00',
+                deactivationTime: '06:00',
+                progressDurationMinutes: 30,
+                alertSoundSeconds: 60
             };
             return (
                 <AlertaVigiaConfigPage
@@ -1044,7 +1060,7 @@ function App() {
         }
         if (activeVigiaPost) {
             return (
-                <AlertaVigiaActiveScreen 
+                <AlertaVigiaActiveScreen
                     post={activeVigiaPost}
                     failures={postFailures[activeVigiaPost.id] || 0}
                     config={alertaVigiaConfigs[activeVigiaPost.id] || { activationTime: '22:00', deactivationTime: '06:00', progressDurationMinutes: 30, alertSoundSeconds: 60 }}
@@ -1063,7 +1079,7 @@ function App() {
                         <ArrowLeftIcon className="w-6 h-6" />
                     </button>
                     <div className="w-full max-w-2xl">
-                         <AlertaVigiaContent onSendAction={handleSendAlertVigiaAction} />
+                        <AlertaVigiaContent onSendAction={handleSendAlertVigiaAction} />
                     </div>
                     <footer className="absolute bottom-4 text-center text-sm text-gray-500">
                         Support WhatsApp: (11) 99803-7370
@@ -1073,13 +1089,13 @@ function App() {
         }
         if (isLoggedIn && currentUser) {
             return (
-                <Dashboard 
+                <Dashboard
                     currentUser={currentUser} onLogout={handleLogout} companies={filteredCompanies} posts={filteredPosts}
                     events={eventsForCurrentUser} onToggleEventStatus={handleToggleEventStatus}
                     onAddPost={handleAddPost} onEdit={handleEditCompanyClick} onBlock={handleBlockCompanyClick} onDelete={handleDeleteCompanyClick}
                     onEditPost={handleEditPostClick} onBlockPost={handleBlockPostClick} onDeletePost={handleDeletePostClick} onMonitorPost={handleOpenAlertaVigiaConfig}
                     onAddComment={handleOpenCommentModal} postSearchQuery={postSearchQuery} onPostSearchChange={setPostSearchQuery}
-                    companySearchQuery={companySearchQuery} onCompanySearchChange={setCompanySearchQuery} 
+                    companySearchQuery={companySearchQuery} onCompanySearchChange={setCompanySearchQuery}
                     onSendAlertVigiaAction={handleSendAlertVigiaAction}
                     hiddenEventIds={hiddenEventIds}
                     onHideEvents={handleHideEvents}
@@ -1090,12 +1106,12 @@ function App() {
         }
         return <LandingPage onLoginClick={() => setShowLoginModal(true)} onDemoClick={() => setDemoMode(true)} />;
     };
-        
+
     return (
         <>
             {renderContent()}
             <audio ref={newEventSoundRef} src="https://hrubgwggnnxyqeomhhyc.supabase.co/storage/v1/object/public/som%20de%20eventos/som%20de%20eventos.mp3" preload="auto" />
-            <LoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} onLogin={handleLogin} onSwitchToRegister={() => {setShowLoginModal(false); setShowRegisterModal(true);}}/>
+            <LoginModal isOpen={showLoginModal} onClose={() => setShowLoginModal(false)} onLogin={handleLogin} onSwitchToRegister={() => { setShowLoginModal(false); setShowRegisterModal(true); }} />
             <RegisterModal isOpen={showRegisterModal} onClose={() => setShowRegisterModal(false)} onRegister={handleRegisterCompany} />
             <EditCompanyModal isOpen={showEditCompanyModal} onClose={() => setShowEditCompanyModal(false)} onSave={handleUpdateCompany} company={selectedCompany} />
             <EditPostModal isOpen={showEditPostModal} onClose={() => setShowEditPostModal(false)} onSave={handleUpdatePost} post={selectedPost} />
