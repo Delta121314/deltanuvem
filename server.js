@@ -34,28 +34,13 @@ app.post('/api/send-email', async (req, res) => {
         return res.status(500).json({ error: 'Servidor não configurado com API Key do SendGrid.' });
     }
 
-    if (!to || !subject || !html) {
-        return res.status(400).json({ error: 'Faltam campos obrigatórios (to, subject, html).' });
+} catch (error) {
+    console.error('Erro ao enviar email:', error);
+    if (error.response) {
+        console.error(error.response.body);
     }
-
-    const msg = {
-        to,
-        from: 'deltanuvem1@gmail.com', // Substitua pelo seu e-mail verificado no SendGrid
-        subject,
-        html,
-    };
-
-    try {
-        await sgMail.send(msg);
-        console.log(`Email enviado para ${to}`);
-        res.status(200).json({ message: 'Email enviado com sucesso!' });
-    } catch (error) {
-        console.error('Erro ao enviar email:', error);
-        if (error.response) {
-            console.error(error.response.body);
-        }
-        res.status(500).json({ error: 'Falha ao enviar email.', details: error.message });
-    }
+    res.status(500).json({ error: 'Falha ao enviar email.', details: error.message });
+}
 });
 
 // Qualquer outra rota retorna o index.html (SPA)
